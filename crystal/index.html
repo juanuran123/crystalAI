@@ -529,13 +529,32 @@ function matchInventory(lead) {
   if (wantsUsed) pool = INVENTORY.filter(v => v.type === 'used' || v.type === 'cpo');
   else if (wantsNew) pool = INVENTORY.filter(v => v.type === 'new');
 
+  // Body-style filter: "truck"/"pickup" → only trucks; "suv"/"crossover" → only SUVs
+  const TRUCK_MODELS = ['f-150','f-250','f-350','ranger','maverick','frontier','silverado','sierra','ram','tacoma','tundra','colorado','canyon','ridgeline','titan','raptor'];
+  const SUV_MODELS   = ['explorer','escape','bronco sport','bronco','edge','expedition','mustang mach-e','navigator','tahoe','suburban','traverse','equinox','pilot','highlander','rav4','cr-v','tucson'];
+  const MIDSIZE_TRUCKS = ['ranger','maverick','frontier','tacoma','colorado','canyon','ridgeline'];
+  const wantsTruck   = queryLow.includes('truck') || queryLow.includes('pickup');
+  const wantsMidsize = queryLow.includes('midsize') || queryLow.includes('mid-size') || queryLow.includes('mid size') || queryLow.includes('compact truck');
+  const wantsSUV     = queryLow.includes(' suv') || queryLow.includes('crossover');
+  if(wantsMidsize) {
+    const midsizePool = pool.filter(v => MIDSIZE_TRUCKS.some(k => (v.model||'').toLowerCase().includes(k)));
+    if(midsizePool.length > 0) pool = midsizePool;
+  } else if(wantsTruck) {
+    const truckPool = pool.filter(v => TRUCK_MODELS.some(k => (v.model||'').toLowerCase().includes(k)));
+    if(truckPool.length > 0) pool = truckPool;
+  } else if(wantsSUV) {
+    const suvPool = pool.filter(v => SUV_MODELS.some(k => (v.model||'').toLowerCase().includes(k)));
+    if(suvPool.length > 0) pool = suvPool;
+  }
+
   let scored = pool.map(v => {
     let s = 0;
     const mLow = (v.model||'').toLowerCase();
     vWords.forEach(w => { if(mLow.includes(w)) s += 20; });
     if(vLow && mLow.includes(vLow.split(' ')[0])) s += 20;
     if(vLow.includes('suv') && ['explorer','escape','bronco','edge','expedition'].some(x=>mLow.includes(x))) s += 20;
-    if(vLow.includes('truck') && ['f-150','f-250','ranger','maverick'].some(x=>mLow.includes(x))) s += 20;
+    if(vLow.includes('truck') && TRUCK_MODELS.some(x=>mLow.includes(x))) s += 20;
+    if(vLow.includes('midsize') && MIDSIZE_TRUCKS.some(x=>mLow.includes(x))) s += 30;
     if(vLow.includes('ev') && ['mach-e'].some(x=>mLow.includes(x))) s += 30;
     if(vLow.includes('off-road') && ['bronco','ranger','f-150'].some(x=>mLow.includes(x))) s += 20;
     const budget = (lead.budget||'').replace(/[^0-9]/g,'');
@@ -587,7 +606,8 @@ function buildInventoryCards(lead) {
     const milesStr = v.miles > 0 ? `${v.miles.toLocaleString()} mi · ` : '';
     // For used vehicles, model already includes "year make model" from liveUsed mapping.
     // Strip leading year from model string to avoid "2019 Ford 2019 Ford F-150 XLT".
-    const cleanModel = (v.model||'').replace(/^\d{4}\s+(?:Ford|Nissan|Toyota|Chevy|Chevrolet|Ram|GMC|Honda|Jeep|Dodge)\s+/i, '');
+    // Strip leading "YEAR MAKE " from model string to prevent "2019 Ford 2019 Ford F-150"
+    const cleanModel = (v.model||'').replace(/^\d{4}\s+\S+\s+/, '');
     const displayName = v.make && v.make !== 'Ford'
       ? `${v.year} ${v.make} ${cleanModel}`
       : `${v.year} Ford ${cleanModel}`;
@@ -651,17 +671,40 @@ function buildAppointmentCard() {
     {time:'5:30 PM', label: t?'Evening':'Noche'},
   ];
 
+  // Helper: parse a time string like "9:30 AM" into a decimal hour (9.5)
+  function slotHour(timeStr) {
+    const [hm, ampm] = timeStr.split(' ');
+    const [h, m] = hm.split(':').map(Number);
+    let hr = h + m / 60;
+    if (ampm === 'PM' && h !== 12) hr += 12;
+    if (ampm === 'AM' && h === 12) hr = m / 60;
+    return hr;
+  }
+  const nowDecimal = today.getHours() + today.getMinutes() / 60;
+
   const slots = [];
-  // Start from today if before 3pm local time, otherwise tomorrow
+  // Start from today if there are future slots available, otherwise tomorrow
   const startD = new Date().getHours() < 15 ? 0 : 1;
-  for(let d=startD; d<=8 && slots.length<6; d++) {
+  for(let d=startD; d<=9 && slots.length<6; d++) {
     const dt = new Date(today); dt.setDate(today.getDate()+d);
-    if(dt.getDay()===0) continue;
+    if(dt.getDay()===0) continue; // skip Sunday
     const dayLabel = days[dt.getDay()-1];
     const dateLabel = `${dt.getMonth()+1}/${dt.getDate()}`;
-    const tOpt = timeOptions[slots.length % timeOptions.length];
-    slots.push({day:dayLabel, date:dateLabel, time:tOpt.time, label:tOpt.label,
-      full:`${dayLabel} ${dateLabel} at ${tOpt.time}`});
+    const isToday = d === 0;
+    if(isToday) {
+      // For today: add each future slot individually (need at least 1hr buffer)
+      timeOptions.forEach(tOpt => {
+        if(slots.length >= 6) return;
+        if(slotHour(tOpt.time) >= nowDecimal + 1) {
+          slots.push({day:dayLabel, date:dateLabel, time:tOpt.time, label:tOpt.label,
+            full:`${dayLabel} ${dateLabel} at ${tOpt.time}`});
+        }
+      });
+    } else {
+      const tOpt = timeOptions[slots.length % timeOptions.length];
+      slots.push({day:dayLabel, date:dateLabel, time:tOpt.time, label:tOpt.label,
+        full:`${dayLabel} ${dateLabel} at ${tOpt.time}`});
+    }
   }
 
   return `<div class="apt-card" id="apt-card">
@@ -1074,6 +1117,17 @@ Include these EXACTLY in your response text where appropriate:
 [SHOW_INVENTORY] — show 2-4 matched vehicles
 [SHOW_CALENDAR] — show appointment time picker  
 [SHOW_TRADEIN] — show trade-in estimator
+
+═══ VEHICLE SIZE KNOWLEDGE ═══
+Truck sizes — know this cold so you never tell a customer we don't have something we do:
+- FULL-SIZE trucks: F-150, F-250, F-350, Chevy Silverado, GMC Sierra, Ram 1500/2500, Toyota Tundra
+- MIDSIZE trucks: Ford Ranger, Ford Maverick, Nissan Frontier, Toyota Tacoma, Chevy Colorado, GMC Canyon
+  → We carry Nissan Frontiers in our used inventory — that IS a midsize truck. Never say we don't have midsize if a Frontier is on the lot.
+- COMPACT/SMALL trucks: Ford Maverick (also fits here — it's the smallest in our Ford lineup)
+SUV sizes:
+- FULL-SIZE: Expedition, Navigator, Suburban, Tahoe
+- MIDSIZE: Explorer, Edge, Bronco, Pilot, Highlander
+- COMPACT: Escape, Bronco Sport, Equinox, CR-V, RAV4
 
 ═══ WHALING CITY FORD ═══
 - 475 Broad Street, New London, CT 06320 | Sales: (860) 333-5641 | Service: (860) 333-5736
